@@ -21,6 +21,7 @@ M.extensionMappings = makeTbl {
 	'go',
 	'lua',
 	['rs'] = 'rust',
+	['ex'] = 'elixir'
 }
 
 M.filenameMappings = {
@@ -33,6 +34,7 @@ M.exts = {
 	c = 'https://github.com/tree-sitter/tree-sitter-c',
 	cpp = 'https://github.com/tree-sitter/tree-sitter-cpp',
 	diff = 'https://github.com/the-mikedavis/tree-sitter-diff',
+	elixir = 'https://github.com/elixir-lang/tree-sitter-elixir',
 	lua = 'https://github.com/MunifTanjim/tree-sitter-lua',
 	go = 'https://github.com/tree-sitter/tree-sitter-go',
 	gomod = 'https://github.com/camdencheek/tree-sitter-go-mod',
