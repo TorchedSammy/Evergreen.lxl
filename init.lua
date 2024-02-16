@@ -3,6 +3,9 @@ local core = require 'core'
 local config = require 'plugins.evergreen.config'
 local util = require 'plugins.evergreen.util'
 local home = HOME or os.getenv 'HOME'
+local languages = require 'plugins.evergreen.languages'
+local installer = require 'plugins.evergreen.installer'
+
 local function appendPaths(paths)
 	for _, path in ipairs(paths) do
 		package.cpath = package.cpath .. ';' .. path:gsub('~', home)
@@ -11,11 +14,12 @@ end
 
 system.mkdir(config.dataDir)
 system.mkdir(config.parserLocation)
+system.mkdir(config.queryLocation)
 
 appendPaths {
-	util.join {config.dataDir, '?' .. util.soname},
-	util.join {config.parserLocation, '?', 'libtree-sitter-?' .. util.soname},
-	util.join {config.parserLocation, '?', 'parser' .. util.soname},
+	util.join { config.dataDir, '?' .. util.soname },
+	util.join { config.parserLocation, '?', 'libtree-sitter-?' .. util.soname },
+	util.join { config.parserLocation, '?', 'parser' .. util.soname },
 }
 
 if PLATFORM ~= 'Windows' then
@@ -44,13 +48,17 @@ core.log('%s', ok)
 if not ok then
 	core.add_thread(function()
 		core.log 'Could not require ltreesitter, attempting to install...'
-		local url = string.format('https://github.com/TorchedSammy/evergreen-builds/releases/download/ltreesitter/ltreesitter%s', util.soname)
+		local url = string.format(
+			'https://github.com/TorchedSammy/evergreen-builds/releases/download/ltreesitter/ltreesitter%s', util.soname)
 
 		local out, exitCode
 		if PLATFORM == 'Windows' then
-			out, exitCode = exec({'powershell', '-Command', string.format('Invoke-WebRequest -OutFile ( New-Item -Path "%s" -Force ) -Uri %s', util.join {config.dataDir, 'ltreesitter' .. util.soname}, url)})
+			out, exitCode = exec({ 'powershell', '-Command',
+				string.format('Invoke-WebRequest -OutFile ( New-Item -Path "%s" -Force ) -Uri %s',
+					util.join { config.dataDir, 'ltreesitter' .. util.soname }, url) })
 		else
-			out, exitCode = exec({'curl', '-L', '--create-dirs', '--output-dir', config.dataDir, '--fail', url, '-o', 'ltreesitter' .. util.soname})
+			out, exitCode = exec({ 'curl', '-L', '--create-dirs', '--output-dir', config.dataDir, '--fail', url, '-o',
+				'ltreesitter' .. util.soname })
 		end
 		if exitCode ~= 0 then
 			core.error('An error occured while attempting to download ltreesitter\n%s', out)
@@ -71,7 +79,6 @@ local Highlight = require 'core.doc.highlighter'
 local parser = require 'plugins.evergreen.parser'
 local highlights = require 'plugins.evergreen.highlights'
 require 'plugins.evergreen.style'
-require 'plugins.evergreen.installer'
 
 --- @class core.doc
 --- @field treesit boolean
@@ -86,7 +93,7 @@ end
 local function accumulateLen(tbl, s, e)
 	local len = 0
 
-	for i=s,e do
+	for i = s, e do
 		len = len + tbl[i]:len()
 	end
 
@@ -184,7 +191,7 @@ end
 local oldTokenize = Highlight.tokenize_line
 function Highlight:tokenize_line(idx, state)
 	if not self.doc.treesit then return oldTokenize(self, idx, state) end
-	
+
 	local txt      = self.doc.lines[idx]
 	local row      = idx - 1
 	local toks     = {}
@@ -207,7 +214,7 @@ function Highlight:tokenize_line(idx, state)
 		local startPos = startPt.row < row and 1 or startPt.column + 1
 		local endPos   = endPt.row > row and #txt or endPt.column
 
-		local i = #buf - 1
+		local i        = #buf - 1
 		while i >= 1 and buf[i + 1] < startPos do
 			local e = buf[i + 1]
 			toks[#toks + 1] = buf[i]
@@ -237,7 +244,7 @@ function Highlight:tokenize_line(idx, state)
 
 		i = i - 2
 	end
-	
+
 	return {
 		init_state = state,
 		state      = state,
@@ -253,5 +260,90 @@ command.add('core.docview!', {
 			dv.doc.treesit = not dv.doc.treesit
 			dv.doc.highlighter:reset()
 		end
+	end
+})
+
+command.add(nil, {
+	['evergreen:status'] = function()
+		local notInstalled = {}
+		local installed = {}
+		local errorCounter = 0
+		for lang, options in pairs(languages.grammars) do
+			local lib = util.join { config.parserLocation, lang, 'parser.so' }
+			local queries = util.join { config.queryLocation, lang, 'highlights.scm' }
+			if not util.exists(lib) or not util.exists(queries) then
+				errorCounter = errorCounter + 1
+				table.insert(notInstalled, lang)
+			else
+				local str = ' - ' .. lang .. ': '
+				if options.filePatterns ~= nil then
+					for _, ext in pairs(options.filePatterns) do
+						str = str .. ext .. ' '
+					end
+				end
+				str = str .. ' '
+				table.insert(installed, str)
+			end
+		end
+		core.log('[Evergreen] Installed grammars:\n%s', table.concat(installed, '\n'))
+		if errorCounter > 0 then
+			core.warn('[Evergreen] grammars not operational:\n%s', table.concat(notInstalled, '\n'))
+		end
+	end
+})
+
+
+local exts = {}
+
+for k, _ in pairs(languages.grammars) do
+	table.insert(exts, k)
+end
+
+
+command.add(nil, {
+	['evergreen:update-all'] = function()
+		for lang, options in pairs(languages.grammars) do
+			core.log('[Evergreen] updating grammar for language "%s"', lang)
+			installer.installGrammar(options, config)
+		end
+	end
+})
+
+command.add(nil, {
+	['evergreen:update'] = function()
+		core.command_view:enter('Update Treesitter parser for', {
+			submit = function(lang)
+				if not languages.grammars[lang] then
+					core.error('Unknown parser for language ' .. lang)
+					return
+				end
+				core.log('Installing parser for ' .. lang)
+				installer.installGrammar(languages.grammars[lang], config)
+			end,
+			suggest = function()
+				return exts
+			end
+		})
+	end
+})
+
+command.add(nil, {
+	['evergreen:clean'] = function()
+		core.add_thread(function()
+			for _, parser_dir in pairs(system.list_dir(config.parserLocation)) do
+				local path = util.join { config.parserLocation, parser_dir }
+				if util.isDir(path) and languages.grammars[parser_dir] == nil then
+					core.log('[Evergreen] removing unused parser "%s"', parser_dir)
+					util.rmDir(path)
+				end
+			end
+			for _, query_dir in pairs(system.list_dir(config.queryLocation)) do
+				local path = util.join { config.queryLocation, query_dir }
+				if util.isDir(path) and languages.grammars[query_dir] == nil then
+					core.log('[Evergreen] removing unused queries "%s"', query_dir)
+					util.rmDir(path)
+				end
+			end
+		end)
 	end
 })
